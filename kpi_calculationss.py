@@ -394,3 +394,4 @@ def analyze_transportation_cost_trend(df_pl, query_details):
         increased_costs["Cost_Increase"] = increased_costs["Cost_Increase"].apply(lambda x: f"${x:,.2f}")
         
         return increased_costs[['Group Description', 'Previous_Month_Cost', 'Current_Month_Cost', 'Cost_Increase']]
+    #9
