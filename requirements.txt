@@ -6,3 +6,4 @@ pytz
 python-dateutil
 azure-core
 azure-identity
+azure-storage-blob
