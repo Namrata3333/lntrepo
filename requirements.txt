@@ -4,3 +4,5 @@ openai
 python-dotenv
 pytz
 python-dateutil
+azure-core
+azure-identity
