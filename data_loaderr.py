@@ -1,22 +1,29 @@
-# data_loader.py (FINAL CORRECTED VERSION - Encapsulated loading with all renames)
+# data_loader.py (FINAL CORRECTED VERSION - Using Connection String)
 
-from azure.identity import DefaultAzureCredential
+import os # Import the os module to access environment variables
+# from azure.identity import DefaultAzureCredential # REMOVED: No longer needed for connection string auth
 from azure.storage.blob import BlobServiceClient
 import pandas as pd
 from io import BytesIO
 import sys
 
 # Azure Blob config (these are global constants, fine to define at top)
-account_url = "https://pbichatbot11.blob.core.windows.net"
+# account_url = "https://pbichatbot11.blob.core.windows.net" # No longer needed with connection string
 container_name = "lntnamrata"
 
-# Authenticate and connect (client initialization also fine at top as it's a one-time setup)
+# Authenticate and connect using the connection string (client initialization also fine at top as it's a one-time setup)
 try:
-    credential = DefaultAzureCredential()
-    blob_service_client = BlobServiceClient(account_url=account_url, credential=credential)
+    # Get connection string from environment variable (Streamlit Cloud secret)
+    connect_str = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+    
+    if not connect_str:
+        raise ValueError("AZURE_STORAGE_CONNECTION_STRING environment variable not set. Please add it to Streamlit Cloud secrets.")
+
+    blob_service_client = BlobServiceClient.from_connection_string(connect_str)
     container_client = blob_service_client.get_container_client(container_name)
+    print(f"Successfully connected to Azure Blob Storage container: {container_name}")
 except Exception as e:
-    print(f"Error initializing Azure Blob Storage client: {e}")
+    print(f"Error initializing Azure Blob Storage client using connection string: {e}")
     sys.exit(1) # Exit if cannot connect to Azure Blob
 
 def get_pl_data():
