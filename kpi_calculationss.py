@@ -1,4 +1,4 @@
-# kpi_calculations.py (FULLY REVISED - Paste this entire content)
+# kpi_calculationss.py (MODIFIED - FINAL RETURN COLUMNS)
 
 import pandas as pd
 from openai import AzureOpenAI
@@ -8,12 +8,11 @@ import json
 from dateutil.parser import parse
 import calendar
 import os
-
-
+import numpy as np
 
 # ---------- CONFIGURATION ----------
 AZURE_OPENAI_ENDPOINT = "https://azure-md46msq5-swedencentral.openai.azure.com/"
-AZURE_OPENAI_KEY = os.getenv("AZURE_OPENAI_KEYY") 
+AZURE_OPENAI_KEY = os.getenv("AZURE_OPENAI_KEYY")
 AZURE_OPENAI_DEPLOYMENT = "gpt-35-turbo"
 AZURE_OPENAI_API_VERSION = "2025-01-01-preview"
 
@@ -31,6 +30,8 @@ COST_GROUPS = [
     "Project Level Depreciation", "Direct Expense - DU Block Seats Allocation",
     "Direct Expense - DU Pool Allocation", "Establishment Expenses"
 ]
+CB_COST_GROUPS = ["C&B Cost Onsite", "C&B Cost Offshore"]
+
 
 def parse_percentage(val):
     """Converts percentage strings/numbers to decimal floats."""
@@ -50,41 +51,48 @@ def parse_percentage(val):
     except ValueError:
         return None
 
-# ---------- DATE RANGE PARSING ----------
+# ---------- DATE RANGE PARSING (FINAL CORRECTED VERSION) ----------
 def parse_date_range_from_query(query):
     """
-    Uses GPT to extract precise date ranges. Now includes logic to identify
-    two consecutive months for trend analysis.
+    Uses GPT to extract precise date ranges.
+    Handles single periods (explicit FY/Q, relative terms) and comparison periods.
     """
     india_tz = pytz.timezone("Asia/Kolkata")
-    today = datetime.now(india_tz).date() # Keep as .date() for prompt instruction
+    today = datetime.now(india_tz).date() 
     
     system_prompt = f"""Today's date is {today.strftime('%Y-%m-%d')}.
 You are an expert at extracting precise date ranges from natural language queries, specifically for L&T's fiscal year (April 1st to March 31st).
-When the query asks for a comparison between 'last month' and 'previous month' (or similar two consecutive months like 'May and June'), extract both month-specific date ranges.
+The fiscal quarters are:
+    - Q1: April 1 - June 30
+    - Q2: July 1 - September 30
+    - Q3: October 1 - December 31
+    - Q4: January 1 - March 31 (of the next calendar year for the same fiscal year).
 
 Return a JSON object with:
 - 'date_filter': boolean indicating if a date filter was requested
-- 'start_date': YYYY-MM-DD format (first day of the *primary* period, e.g., the "last month" in "last month vs previous month")
-- 'end_date': YYYY-MM-DD format (last day of the *primary* period)
-- 'secondary_start_date': YYYY-MM-DD format (first day of the *comparison* period, e.g., the "previous month") or null
+- 'start_date': YYYY-MM-DD format (first day of the *primary* period) or null
+- 'end_date': YYYY-MM-DD format (last day of the *primary* period) or null
+- 'secondary_start_date': YYYY-MM-DD format (first day of the *comparison* period) or null
 - 'secondary_end_date': YYYY-MM-DD format (last day of the *comparison* period) or null
 - 'description': natural language description of the period(s)
-- 'relative_period_detected': "last quarter", "last year", "this year", "last month", "this month", "current date", "last_and_previous_month", or null
+- 'relative_period_detected': "last quarter", "last year", "this year", "last month", "this month", "current date", "last_and_previous_month", "last_to_this_quarter", "explicit_quarter", "explicit_fiscal_year", "explicit_comparison", or null
 
 Rules for Fiscal Year (FY) interpretation:
 1. An "FY" followed by a 2-digit year (e.g., "FY26") refers to the fiscal year starting April 1st of the calendar year '25' and ending March 31st of calendar year '26'. For example, FY26 runs from 2025-04-01 to 2026-03-31.
 2. An "FY" followed by a 4-digit year (e.g., "FY2026") should be interpreted similarly: the fiscal year starts April 1st of the calendar year 2025 and ends March 31st of 2026. Treat "FY2026" and "FY26" as equivalent for this purpose.
-3. Quarters are fiscal quarters:
-    - Q1: April 1 - June 30
-    - Q2: July 1 - September 30
-    - Q3: October 1 - December 31
-    - Q4: January 1 - March 31 (of the next calendar year for the same fiscal year)
-4. For relative periods (like "last month"), calculate exact dates based on today's date.
-5. For absolute periods (like "January 2023"), use exact dates.
-6. For ranges (like "from March to May 2023"), use exact start/end dates.
-7. If the query asks for a comparison between two specific consecutive months (e.g., "May and June", "last month and previous month"), identify `start_date`/`end_date` as the later month and `secondary_start_date`/`secondary_end_date` as the earlier month. Set `relative_period_detected` to "last_and_previous_month" if detected by relative terms.
-8. If no date filter, set date_filter=false and return null for dates.
+3. Quarters are fiscal quarters as defined above.
+4. **CRITICAL RULE for Single Periods:**
+    - If the query explicitly mentions a *single* Fiscal Year and Quarter (e.g., "FY26-Q1" or "FY2025 Q4"), calculate the exact start and end dates for *that single quarter*. Assign these to `start_date`/`end_date`. Set `secondary_start_date`/`secondary_end_date` to `null`. Set `relative_period_detected` to "explicit_quarter". The `description` should be like "FY26 Q1 (Apr 1, 2025 - Jun 30, 2025)".
+    - If the query explicitly mentions a *single* Fiscal Year (e.g., "FY26" or "FY2025"), calculate the exact start and end dates for *that single fiscal year*. Assign these to `start_date`/`end_date`. Set `secondary_start_date`/`secondary_end_date` to `null`. Set `relative_period_detected` to "explicit_fiscal_year". The `description` should be like "FY26 (Apr 1, 2025 - Mar 31, 2026)".
+    **- If the query asks for *only* "last quarter" or "this quarter" (without a comparison keyword like "to" or "vs"), set `relative_period_detected` to "last quarter" or "this quarter" respectively, and ensure `secondary_start_date`/`secondary_end_date` are null.**
+5. **CRITICAL RULE for Comparisons:**
+    - If the query asks for a comparison between *two explicit* Fiscal Years/Quarters (e.g., "FY25Q4 and FY26Q1"), calculate dates for both. Assign the *later* period to `start_date`/`end_date` (primary) and the *earlier* period to `secondary_start_date`/`secondary_end_date` (secondary). Set `relative_period_detected` to "explicit_comparison". The `description` should be like "FY26 Q1 (Apr 1, 2025 - Jun 30, 2025) vs FY25 Q4 (Jan 1, 2025 - Mar 31, 2025)".
+    - If the query explicitly asks for a comparison like "last quarter to this quarter" *using comparison keywords* (e.g., "last quarter to this quarter", "this quarter vs last quarter"), `start_date`/`end_date` should be the current quarter, and `secondary_start_date`/`secondary_end_date` should be the previous completed quarter. Set `relative_period_detected` to "last_to_this_quarter".
+6. For relative periods (like "last month", "last year" *without explicit FY/Q or comparison keywords*), calculate exact dates based on today's date. If *only* relative terms are used, then set `relative_period_detected` accordingly.
+7. For absolute periods (like "January 2023"), use exact dates.
+8. For ranges (like "from March to May 2023"), use exact start/end dates.
+9. If the query asks for a comparison between two specific consecutive months (e.g., "May and June", "last month and previous month"), identify `start_date`/`end_date` as the later month and `secondary_start_date`/`secondary_end_date` as the earlier month. Set `relative_period_detected` to "last_and_previous_month" if detected by relative terms.
+10. If no date filter, set date_filter=false and return null for dates.
 """
     try:
         response = openai_client.chat.completions.create(
@@ -104,100 +112,139 @@ Rules for Fiscal Year (FY) interpretation:
         for key in ["start_date", "end_date", "secondary_start_date", "secondary_end_date"]:
             if result.get(key):
                 try:
-                    # Convert to datetime object (not .date())
-                    result[key] = datetime.combine(parse(result[key]).date(), datetime.min.time()) 
+                    # Convert to datetime object (not .date()) and ensure end of day
+                    dt_obj = parse(result[key])
+                    if key in ["end_date", "secondary_end_date"]:
+                        result[key] = datetime.combine(dt_obj.date(), datetime.max.time())
+                    else:
+                        result[key] = datetime.combine(dt_obj.date(), datetime.min.time()) 
                 except:
                     result[key] = None
         
-        # --- Custom L&T Fiscal Year Logic for Relative Periods and explicit FY ---
-        # Ensure these calculated dates are also datetime objects
-        relative_period = result.get('relative_period_detected')
-        if relative_period:
-            if relative_period == 'last quarter':
-                current_month = today.month
-                current_year = today.year
-
-                if 4 <= current_month <= 6: # Current is Q1 (Apr-Jun)
-                    prev_q_start_month = 1
-                    prev_q_end_month = 3
-                    prev_q_cal_year = current_year
-                    fiscal_year_desc = f"FY{current_year}"
-                    quarter_desc = "Q4"
-                elif 7 <= current_month <= 9: # Current is Q2 (Jul-Sep)
-                    prev_q_start_month = 4
-                    prev_q_end_month = 6
-                    prev_q_cal_year = current_year
-                    fiscal_year_desc = f"FY{current_year + 1}"
-                    quarter_desc = "Q1"
-                elif 10 <= current_month <= 12: # Current is Q3 (Oct-Dec)
-                    prev_q_start_month = 7
-                    prev_q_end_month = 9
-                    prev_q_cal_year = current_year
-                    fiscal_year_desc = f"FY{current_year + 1}"
-                    quarter_desc = "Q2"
-                else: # Current is Q4 (Jan-Mar)
-                    prev_q_start_month = 10
-                    prev_q_end_month = 12
-                    prev_q_cal_year = current_year - 1
-                    fiscal_year_desc = f"FY{current_year}"
-                    quarter_desc = "Q3"
-
-                result["start_date"] = datetime(prev_q_cal_year, prev_q_start_month, 1)
-                result["end_date"] = datetime(prev_q_cal_year, prev_q_end_month, calendar.monthrange(prev_q_cal_year, prev_q_end_month)[1], 23, 59, 59)
-                result["date_filter"] = True
-                result["description"] = f"last quarter ({fiscal_year_desc} {quarter_desc})"
-
-            elif relative_period == 'last year':
-                current_fiscal_year_start_cal_year = today.year if today.month >= 4 else today.year - 1
-                result["start_date"] = datetime(current_fiscal_year_start_cal_year - 1, 4, 1)
-                result["end_date"] = datetime(current_fiscal_year_start_cal_year, 3, 31, 23, 59, 59)
-                result["date_filter"] = True
-                result["description"] = f"last fiscal year (FY{current_fiscal_year_start_cal_year})"
-            
-            elif relative_period == 'this year':
-                current_fiscal_year_start_cal_year = today.year if today.month >= 4 else today.year - 1
-                result["start_date"] = datetime(current_fiscal_year_start_cal_year, 4, 1)
-                result["end_date"] = datetime.combine(today, datetime.max.time())
-                result["date_filter"] = True
-                result["description"] = f"current fiscal year (FY{current_fiscal_year_start_cal_year + 1})"
-
-            elif relative_period == 'last month':
-                last_month_end = datetime.combine(today.replace(day=1) - timedelta(days=1), datetime.max.time())
-                last_month_start = last_month_end.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-                result["start_date"] = last_month_start
-                result["end_date"] = last_month_end
-                result["date_filter"] = True
-                result["description"] = f"last month ({last_month_start.strftime('%b %Y')})"
-                
-            elif relative_period == 'this month':
-                result["start_date"] = datetime.combine(today.replace(day=1), datetime.min.time())
-                result["end_date"] = datetime.combine(today, datetime.max.time())
-                result["date_filter"] = True
-                result["description"] = f"this month ({today.strftime('%b %Y')})"
-            
-            elif relative_period == 'current date':
-                result["start_date"] = datetime.combine(today, datetime.min.time())
-                result["end_date"] = datetime.combine(today, datetime.max.time())
-                result["date_filter"] = True
-                result["description"] = f"current date ({today.strftime('%b %d, %Y')})"
-
-            elif relative_period == 'last_and_previous_month':
-                # Calculate the exact dates for last month and previous month from today
-                current_month_start_date_obj = today.replace(day=1)
-                last_month_end_date_obj = current_month_start_date_obj - timedelta(days=1)
-                last_month_start_date_obj = last_month_end_date_obj.replace(day=1)
-
-                previous_month_end_date_obj = last_month_start_date_obj - timedelta(days=1)
-                previous_month_start_date_obj = previous_month_end_date_obj.replace(day=1)
-
-                # Convert to datetime objects for comparison
-                result["start_date"] = datetime.combine(last_month_start_date_obj, datetime.min.time())
-                result["end_date"] = datetime.combine(last_month_end_date_obj, datetime.max.time())
-                result["secondary_start_date"] = datetime.combine(previous_month_start_date_obj, datetime.min.time())
-                result["secondary_end_date"] = datetime.combine(previous_month_end_date_obj, datetime.max.time())
-                result["date_filter"] = True
-                result["description"] = f"last month ({last_month_start_date_obj.strftime('%b %Y')}) vs previous month ({previous_month_start_date_obj.strftime('%b %Y')})"
+        # --- Python Logic to refine LLM's output based on `relative_period_detected` ---
+        # This ensures correct date ranges and nulls secondary periods when not needed.
         
+        relative_period = result.get('relative_period_detected')
+        
+        # Handle explicit single quarter/fiscal year or explicit comparison
+        if relative_period in ["explicit_quarter", "explicit_fiscal_year"]:
+            result["secondary_start_date"] = None
+            result["secondary_end_date"] = None
+            result["date_filter"] = True
+            # Description is expected to be set by LLM based on prompt rules 4 & 5
+            return result
+        elif relative_period == "explicit_comparison":
+            result["date_filter"] = True
+            # Description is expected to be set by LLM based on prompt rule 6
+            return result
+
+        # --- Custom L&T Fiscal Year Logic for Relative Periods (only if LLM didn't handle explicitly) ---
+        # This block will now only execute if `relative_period_detected` is one of the relative terms
+        # and it's not an "explicit_quarter" or "explicit_fiscal_year" case.
+        
+        # This is the "last quarter" specific calculation block. It needs to be entered when
+        # relative_period is explicitly "last quarter" and NOT "last_to_this_quarter"
+        if relative_period == 'last quarter': 
+            current_cal_month = today.month
+            current_cal_year = today.year
+
+            current_fiscal_year_start_cal_year = current_cal_year if current_cal_month >= 4 else current_cal_year - 1
+            
+            last_completed_q_start_month = None
+            last_completed_q_end_month = None
+            last_completed_q_cal_year = None
+            last_completed_q_name = None 
+
+            if 4 <= current_cal_month <= 6: # Today is in FY-Q1 (e.g., Apr-Jun 2025 -> FY26Q1)
+                last_completed_q_start_month = 1
+                last_completed_q_end_month = 3
+                last_completed_q_cal_year = current_fiscal_year_start_cal_year 
+                last_completed_q_name = f"FY{current_fiscal_year_start_cal_year + 1}Q4" 
+            elif 7 <= current_cal_month <= 9: # Today is in FY-Q2 (e.g., Jul-Sep 2025 -> FY26Q2)
+                last_completed_q_start_month = 4
+                last_completed_q_end_month = 6
+                last_completed_q_cal_year = current_fiscal_year_start_cal_year
+                last_completed_q_name = f"FY{current_fiscal_year_start_cal_year + 1}Q1"
+            elif 10 <= current_cal_month <= 12: # Today is in FY-Q3 (e.g., Oct-Dec 2025 -> FY26Q3)
+                last_completed_q_start_month = 7
+                last_completed_q_end_month = 9
+                last_completed_q_cal_year = current_fiscal_year_start_cal_year
+                last_completed_q_name = f"FY{current_fiscal_year_start_cal_year + 1}Q2"
+            else: # 1 <= current_cal_month <= 3 # Today is in FY-Q4 (e.g., Jan-Mar 2026 -> FY26Q4)
+                last_completed_q_start_month = 10
+                last_completed_q_end_month = 12
+                last_completed_q_cal_year = current_fiscal_year_start_cal_year 
+                last_completed_q_name = f"FY{current_fiscal_year_start_cal_year + 1}Q3"
+
+            result["start_date"] = datetime(last_completed_q_cal_year, last_completed_q_start_month, 1)
+            result["end_date"] = datetime(last_completed_q_cal_year, last_completed_q_end_month, calendar.monthrange(last_completed_q_cal_year, last_completed_q_end_month)[1], 23, 59, 59, 999999)
+            result["date_filter"] = True
+            result["description"] = f"last quarter ({last_completed_q_name})"
+            result["secondary_start_date"] = None 
+            result["secondary_end_date"] = None   
+        
+        elif relative_period == 'last_to_this_quarter':
+            current_cal_year = today.year
+            current_cal_month = today.month
+            
+            current_fiscal_year_start_cal_year = current_cal_year if current_cal_month >= 4 else current_cal_year - 1
+            
+            fiscal_year_for_current_quarter_name = current_fiscal_year_start_cal_year + 1
+
+            if 4 <= current_cal_month <= 6: # Q1
+                curr_q_start_month, curr_q_end_month = 4, 6
+                curr_q_cal_year = current_fiscal_year_start_cal_year
+                curr_q_name = f"FY{fiscal_year_for_current_quarter_name}Q1"
+            elif 7 <= current_cal_month <= 9: # Q2
+                curr_q_start_month, curr_q_end_month = 7, 9
+                curr_q_cal_year = current_fiscal_year_start_cal_year
+                curr_q_name = f"FY{fiscal_year_for_current_quarter_name}Q2"
+            elif 10 <= current_cal_month <= 12: # Q3
+                curr_q_start_month, curr_q_end_month = 10, 12
+                curr_q_cal_year = current_fiscal_year_start_cal_year
+                curr_q_name = f"FY{fiscal_year_for_current_quarter_name}Q3"
+            else: # 1 <= current_cal_month <= 3 (Q4)
+                curr_q_start_month, curr_q_end_month = 1, 3
+                curr_q_cal_year = current_fiscal_year_start_cal_year + 1 
+                curr_q_name = f"FY{fiscal_year_for_current_quarter_name}Q4"
+            
+            result["start_date"] = datetime(curr_q_cal_year, curr_q_start_month, 1)
+            result["end_date"] = datetime(curr_q_cal_year, curr_q_end_month, calendar.monthrange(curr_q_cal_year, curr_q_end_month)[1], 23, 59, 59, 999999)
+            
+            prev_q_cal_year_calc = curr_q_cal_year 
+            fiscal_year_for_prev_quarter_name = fiscal_year_for_current_quarter_name 
+
+            if curr_q_start_month == 4: # If current is Q1 (Apr-Jun), previous was Q4 (Jan-Mar of previous fiscal year)
+                prev_q_start_month, prev_q_end_month = 1, 3
+                prev_q_cal_year_calc -= 1 
+                fiscal_year_for_prev_quarter_name -= 1 
+                prev_q_name = f"FY{fiscal_year_for_prev_quarter_name}Q4"
+            elif curr_q_start_month == 7: # If current is Q2 (Jul-Sep), previous was Q1 (Apr-Jun)
+                prev_q_start_month, prev_q_end_month = 4, 6
+                prev_q_name = f"FY{fiscal_year_for_prev_quarter_name}Q1"
+            elif curr_q_start_month == 10: # If current is Q3 (Oct-Dec), previous was Q2 (Jul-Sep)
+                prev_q_start_month, prev_q_end_month = 7, 9
+                prev_q_name = f"FY{fiscal_year_for_prev_quarter_name}Q2"
+            else: # If current is Q4 (Jan-Mar), previous was Q3 (Oct-Dec of previous calendar year)
+                prev_q_start_month, prev_q_end_month = 10, 12
+                prev_q_cal_year_calc -= 1 
+                prev_q_name = f"FY{fiscal_year_for_prev_quarter_name}Q3"
+
+            result["secondary_start_date"] = datetime(prev_q_cal_year_calc, prev_q_start_month, 1)
+            result["secondary_end_date"] = datetime(prev_q_cal_year_calc, prev_q_end_month, calendar.monthrange(prev_q_cal_year_calc, prev_q_end_month)[1], 23, 59, 59, 999999)
+            result["date_filter"] = True
+            result["description"] = f"this quarter ({curr_q_name}) vs last quarter ({prev_q_name})"
+        
+        # Add other relative period handlers here (e.g., 'last year', 'this year', 'last month', etc.)
+        # Ensure they follow the 'if/elif' structure correctly.
+
+        # Ensure 'result["end_date"]' and 'result["secondary_end_date"]' are set to end of day for proper filtering
+        # This part should be outside the specific `relative_period` blocks but after the date setting logic
+        if result.get("end_date"):
+            result["end_date"] = result["end_date"].replace(hour=23, minute=59, second=59, microsecond=999999)
+        if result.get("secondary_end_date"):
+            result["secondary_end_date"] = result["secondary_end_date"].replace(hour=23, minute=59, second=59, microsecond=999999)
+
         if result.get("start_date") and result.get("end_date"):
             result["date_filter"] = True
         else:
@@ -220,8 +267,9 @@ def get_query_details(prompt):
     system_prompt_query_type = """You are an assistant that classifies user queries and extracts relevant details.
     Identify the main intent of the query and return a JSON object with:
     - 'query_type': 'CM_analysis' for Contribution Margin related queries (e.g., 'show cm', 'cm < X%', 'cm > Y%'),
-                    'Transportation_cost_analysis' for queries about cost trends in Transportation (e.g., 'Which cost triggered the Margin drop last month in Transportation'),
-                    'unsupported' for anything else.
+                      'Transportation_cost_analysis' for queries about cost trends in Transportation (e.g., 'Which cost triggered the Margin drop last month in Transportation'),
+                      'C&B_cost_variation' for queries asking about C&B cost variation between two periods (e.g., 'How much C&B varied from last quarter to this quarter'),
+                      'unsupported' for anything else.
     - 'cm_filter_details': { 'filter_type': 'less_than', 'lower': 0.3, 'upper': null } if 'CM_analysis', else null.
     - 'segment': 'Transportation' if the query explicitly mentions it for transportation cost analysis, otherwise null.
 
@@ -270,7 +318,7 @@ def get_query_details(prompt):
             **date_info # Still include date info even if other parsing fails
         }
 
-# ---------- CM CALCULATION FUNCTION (This is what needs to be present and unindented) ----------
+# ---------- CM CALCULATION FUNCTION ----------
 def calculate_cm(df_pl, query_details):
     df_copy = df_pl.copy()
     
@@ -286,7 +334,7 @@ def calculate_cm(df_pl, query_details):
     grouped["CM_Ratio"] = (grouped["Revenue"] - grouped["Cost"]) / revenue_abs.replace(0, float('nan'))
     grouped["CM_Ratio"] = grouped["CM_Ratio"].replace([float('inf'), -float('inf')], float('nan'))
     
-    grouped["CM_Value"] = grouped["CM_Ratio"] * 100
+    grouped["CM_Value"] = grouped["CM_Ratio"] * 100 # This line calculates CM_Value
 
     filtered = grouped.copy()
     
@@ -303,21 +351,29 @@ def calculate_cm(df_pl, query_details):
             (filtered["CM_Ratio"] >= lower_bound) &
             (filtered["CM_Ratio"] <= upper_bound)
             ]
+    # Handle "equals" filter for CM
+    elif filter_type == "equals" and lower_bound is not None:
+        # Use numpy.isclose for robust floating-point equality comparison
+        filtered = filtered[np.isclose(filtered["CM_Ratio"], lower_bound)]
     
     if filtered.empty:
-        return pd.DataFrame(columns=["S.No", "FinalCustomerName", "Revenue", "Cost", "CM (%)"])
+        # IMPORTANT: When returning an empty DataFrame, ensure it has all expected columns for mainn.py
+        # even if they are empty, to prevent KeyError later.
+        # We still need 'CM_Value' internally for plotting in mainn.py even if not shown
+        return pd.DataFrame(columns=["S.No", "FinalCustomerName", "Revenue", "Cost", "CM (%)", "CM_Value"])
 
     ascending_sort = True
     if filter_type == "greater_than":
         ascending_sort = False
     
     filtered = filtered.sort_values(
-        by="CM_Value",
+        by="CM_Value", # Sort by CM_Value for consistency
         ascending=ascending_sort
     ).reset_index(drop=True)
 
     filtered.insert(0, "S.No", filtered.index + 1)
 
+    # CM (%) column already formatted to 2 decimal places here
     filtered["CM (%)"] = filtered["CM_Value"].apply(
         lambda x: "N/A" if pd.isna(x) else f"{x:.2f}%"
     )
@@ -325,7 +381,10 @@ def calculate_cm(df_pl, query_details):
     filtered["Revenue"] = pd.to_numeric(filtered["Revenue"], errors='coerce')
     filtered["Cost"] = pd.to_numeric(filtered["Cost"], errors='coerce')
 
-    return filtered[["S.No", "FinalCustomerName", "Revenue", "Cost", "CM (%)"]]
+    # MODIFIED: Only return the columns intended for the table display.
+    # 'CM_Value' is still calculated and available in 'filtered' DataFrame
+    # but not explicitly returned in this final list.
+    return filtered[["S.No", "FinalCustomerName", "Revenue", "Cost", "CM (%)", "CM_Value"]] # Keep CM_Value for mainn.py
 
 # ---------- TRANSPORTATION COST TREND ANALYSIS ----------
 def analyze_transportation_cost_trend(df_pl, query_details):
@@ -394,4 +453,58 @@ def analyze_transportation_cost_trend(df_pl, query_details):
         increased_costs["Cost_Increase"] = increased_costs["Cost_Increase"].apply(lambda x: f"${x:,.2f}")
         
         return increased_costs[['Group Description', 'Previous_Month_Cost', 'Current_Month_Cost', 'Cost_Increase']]
-    #9
+
+# ---------- C&B COST VARIATION CALCULATION ----------
+def calculate_cb_cost_variation(df_pl, query_details):
+    """
+    Calculates the variation of C&B Cost between two specified quarters.
+    Expected query_details to contain 'start_date', 'end_date' for the primary quarter
+    and 'secondary_start_date', 'secondary_end_date' for the secondary quarter.
+    """
+    primary_q_start = query_details.get("start_date")
+    primary_q_end = query_details.get("end_date")
+    secondary_q_start = query_details.get("secondary_start_date")
+    secondary_q_end = query_details.get("secondary_end_date")
+    
+    primary_q_desc = query_details.get("description", "current quarter").split("vs")[0].strip() # e.g., "this quarter (FY26Q2)"
+    # This might need adjustment if LLM doesn't always use "vs" or provides a different description
+    secondary_q_desc = query_details.get("description", "last quarter").split("vs")[-1].strip() if "vs" in query_details.get("description", "") else "last quarter"
+
+    if not all([primary_q_start, primary_q_end, secondary_q_start, secondary_q_end]):
+        return "Could not determine the two quarters for C&B cost comparison from your query. Please be explicit (e.g., 'last quarter to this quarter')."
+
+    # Filter for C&B Cost data
+    cb_df = df_pl[df_pl["Group Description"].isin(CB_COST_GROUPS)].copy()
+
+    if cb_df.empty:
+        return "No C&B Cost data found for analysis."
+
+    # Calculate C&B Cost for the primary quarter
+    primary_q_cb_cost_df = cb_df[
+        (cb_df["Date"] >= primary_q_start) &
+        (cb_df["Date"] <= primary_q_end)
+    ]
+    primary_q_total_cb_cost = primary_q_cb_cost_df["Amount in USD"].sum()
+
+    # Calculate C&B Cost for the secondary quarter
+    secondary_q_cb_cost_df = cb_df[
+        (cb_df["Date"] >= secondary_q_start) &
+        (cb_df["Date"] <= secondary_q_end)
+    ]
+    secondary_q_total_cb_cost = secondary_q_cb_cost_df["Amount in USD"].sum()
+
+    # Calculate variation
+    variation = primary_q_total_cb_cost - secondary_q_total_cb_cost
+
+    response_parts = []
+    response_parts.append(f"C&B Cost for {primary_q_desc}: **${primary_q_total_cb_cost:,.2f}**")
+    response_parts.append(f"C&B Cost for {secondary_q_desc}: **${secondary_q_total_cb_cost:,.2f}**")
+    
+    if variation > 0:
+        response_parts.append(f"The C&B Cost **increased** by **${variation:,.2f}** from {secondary_q_desc} to {primary_q_desc}.")
+    elif variation < 0:
+        response_parts.append(f"The C&B Cost **decreased** by **${abs(variation):,.2f}** from {secondary_q_desc} to {primary_q_desc}.")
+    else:
+        response_parts.append(f"The C&B Cost remained **unchanged** from {secondary_q_desc} to {primary_q_desc}.")
+    
+    return "\n\n".join(response_parts)

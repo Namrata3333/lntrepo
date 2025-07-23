@@ -7,3 +7,7 @@ python-dateutil
 azure-core
 azure-identity
 azure-storage-blob
+requests
+pandas
+matplotlib # Add this if you are doing any plotting
+ 

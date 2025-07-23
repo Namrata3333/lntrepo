@@ -1,35 +1,53 @@
-# data_loader.py (FINAL CORRECTED VERSION - Using Connection String)
+# data_loader.py (Revised for more robust client initialization and numeric conversions)
 
-import os # Import the os module to access environment variables
-# from azure.identity import DefaultAzureCredential # REMOVED: No longer needed for connection string auth
+import os
 from azure.storage.blob import BlobServiceClient
 import pandas as pd
 from io import BytesIO
 import sys
+import streamlit as st # Import Streamlit here for caching
 
 # Azure Blob config (these are global constants, fine to define at top)
-# account_url = "https://pbichatbot11.blob.core.windows.net" # No longer needed with connection string
 container_name = "lntnamrata"
 
-# Authenticate and connect using the connection string (client initialization also fine at top as it's a one-time setup)
-try:
-    # Get connection string from environment variable (Streamlit Cloud secret)
-    connect_str = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
-    
-    if not connect_str:
-        raise ValueError("AZURE_STORAGE_CONNECTION_STRING environment variable not set. Please add it to Streamlit Cloud secrets.")
+# Use Streamlit's cache to ensure BlobServiceClient is initialized only once
+@st.cache_resource
+def get_blob_service_client():
+    """
+    Initializes and caches the BlobServiceClient to ensure it's only created once.
+    """
+    try:
+        connect_str = os.getenv("AZURE_STORAGE_CONNECTION_STRING")
+        
+        if not connect_str:
+            raise ValueError("AZURE_STORAGE_CONNECTION_STRING environment variable not set. Please add it to Streamlit Cloud secrets.")
 
-    blob_service_client = BlobServiceClient.from_connection_string(connect_str)
+        print("Initializing Azure Blob Service Client...")
+        blob_service_client = BlobServiceClient.from_connection_string(connect_str)
+        print("Azure Blob Service Client initialized successfully.")
+        return blob_service_client
+    except Exception as e:
+        print(f"Error initializing Azure Blob Storage client using connection string: {e}")
+        st.error(f"Error connecting to Azure Blob Storage: {e}. Please check your AZURE_STORAGE_CONNECTION_STRING.")
+        st.stop() # Stop the app if cannot connect
+        return None # Should not be reached due to st.stop()
+
+# Get clients using the cached function
+blob_service_client = get_blob_service_client()
+# Only proceed if client was successfully initialized
+if blob_service_client:
     container_client = blob_service_client.get_container_client(container_name)
     print(f"Successfully connected to Azure Blob Storage container: {container_name}")
-except Exception as e:
-    print(f"Error initializing Azure Blob Storage client using connection string: {e}")
-    sys.exit(1) # Exit if cannot connect to Azure Blob
+else:
+    # This path should ideally not be hit if st.stop() works
+    print("Failed to initialize blob_service_client, cannot proceed.")
+    sys.exit(1)
+
 
 def get_pl_data():
     """
     Loads P&L data from Azure Blob Storage, renames columns,
-    and converts 'Date' (originally 'Month') to datetime.
+    and converts 'Date' (originally 'Month') and numeric columns to appropriate types.
     Returns a pandas DataFrame.
     """
     blob_name = "P&L data.csv"
@@ -39,7 +57,7 @@ def get_pl_data():
         blob_data = blob_client.download_blob().readall()
         df = pd.read_csv(BytesIO(blob_data))
         
-        # --- ORIGINAL P&L RENAMING STEPS (now inside the function) ---
+        # --- ORIGINAL P&L RENAMING STEPS ---
         df.rename(columns={
             "Segment": "Segment",
             "PVDG": "PVDG",
@@ -50,6 +68,8 @@ def get_pl_data():
             "Contract ID": "Contract ID",
             "Month": "Date", # Renamed 'Month' to 'Date'
             "wbs id": "wbs id",
+            # Assuming 'Amount in USD' is the primary numeric column for P&L
+            # Add other numeric columns if they exist in your raw P&L data and need renaming/conversion
         }, inplace=True)
 
         # Convert "Date" column to datetime (now consistently named 'Date')
@@ -58,7 +78,19 @@ def get_pl_data():
         else:
             print("Error: 'Date' column not found after renaming in P&L data.")
             return pd.DataFrame()
-            
+        
+        # --- NEW: Convert key numeric columns to numeric type ---
+        # 'errors='coerce'' will turn any values that cannot be converted into NaN
+        numeric_cols = ["Amount in USD"] # Add other numeric columns from P&L if applicable
+        for col in numeric_cols:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+            else:
+                print(f"Warning: Numeric column '{col}' not found in P&L data.")
+        
+        # Drop rows where essential numeric columns or Date became NaN after coercion
+        df.dropna(subset=['Date'] + [col for col in numeric_cols if col in df.columns], inplace=True)
+
         print("P&L data successfully loaded and preprocessed from Azure Blob.")
         return df
     except Exception as e:
@@ -68,7 +100,7 @@ def get_pl_data():
 def get_ut_data():
     """
     Loads UT data from Azure Blob Storage, renames columns,
-    and converts 'Date' (originally 'Date_a') to datetime.
+    and converts 'Date' (originally 'Date_a') and numeric columns to appropriate types.
     Returns a pandas DataFrame.
     """
     blob_name = "UT data.csv"
@@ -78,7 +110,7 @@ def get_ut_data():
         blob_data = blob_client.download_blob().readall()
         df = pd.read_csv(BytesIO(blob_data))
         
-        # --- ORIGINAL UT RENAMING STEPS (now inside the function) ---
+        # --- ORIGINAL UT RENAMING STEPS ---
         df.rename(columns={
             "Segment": "Segment",
             "ParticipatingVDG": "PVDG",
@@ -89,6 +121,8 @@ def get_ut_data():
             "sales document": "Contract ID",
             "Date_a": "Date", # Renamed 'Date_a' to 'Date'
             "WBSID": "wbs id",
+            # Assuming 'Amount in USD' is also present and numeric in UT data
+            # Add other numeric columns from UT if applicable
         }, inplace=True)
 
         # Convert "Date" column to datetime (now consistently named 'Date')
@@ -97,6 +131,17 @@ def get_ut_data():
         else:
             print("Error: 'Date' column not found after renaming in UT data.")
             return pd.DataFrame()
+
+        # --- NEW: Convert key numeric columns to numeric type ---
+        numeric_cols = ["Amount in USD"] # Add other numeric columns from UT if applicable
+        for col in numeric_cols:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+            else:
+                print(f"Warning: Numeric column '{col}' not found in UT data.")
+        
+        # Drop rows where essential numeric columns or Date became NaN after coercion
+        df.dropna(subset=['Date'] + [col for col in numeric_cols if col in df.columns], inplace=True)
 
         print("UT data successfully loaded and preprocessed from Azure Blob.")
         return df
@@ -125,11 +170,6 @@ def get_merged_data():
         # Use suffixes to handle potentially overlapping columns that are NOT merge keys
         merged_df = pd.merge(df_pl_processed, df_ut_processed, on=common_columns, how='inner', suffixes=('_pl', '_ut'))
         print("P&L and UT data successfully merged.")
-        
-        # Optionally, you can drop or combine specific duplicate columns here if needed
-        # For example, if both had an 'Amount' column, you'd have 'Amount_pl' and 'Amount_ut'
-        # You would then decide how to handle them, e.g., keep both, sum them, or drop one.
-        
         return merged_df
     except KeyError as ke:
         print(f"Error during merge: Missing expected column for merge. {ke}. Ensure all common columns are present and correctly named.")
