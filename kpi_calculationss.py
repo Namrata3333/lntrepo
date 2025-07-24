@@ -733,3 +733,4 @@ def calculate_cb_revenue_trend(df_pl, query_details):
     monthly_data['Month'] = monthly_data['Month'].dt.strftime('%Y-%m')
 
     return monthly_data[['Month', 'CB_Cost', 'Total_Revenue', 'CB_Revenue_Difference', 'CB_Cost_vs_Revenue_Ratio_Percent']]
+#testing
