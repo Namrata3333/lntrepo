@@ -4,9 +4,10 @@ from dotenv import load_dotenv
 load_dotenv()
 import streamlit as st
 import pandas as pd
-from data_loaderr import get_pl_data
+# Import both get_pl_data and get_ut_data
+from data_loaderr import get_pl_data, get_ut_data 
 # Import all necessary functions from kpi_calculationss
-from kpi_calculationss import calculate_cm, get_query_details, analyze_transportation_cost_trend, calculate_cb_cost_variation, calculate_cb_revenue_trend
+from kpi_calculationss import calculate_cm, get_query_details, analyze_transportation_cost_trend, calculate_cb_cost_variation, calculate_cb_revenue_trend, calculate_hc_trend
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import numpy as np # Import numpy for dynamic range calculation
@@ -22,7 +23,7 @@ sys.path.append(os.path.dirname(__file__))
 st.set_page_config(layout="wide", page_title="L&T KPI Assistant")
 
 st.title("📊 L&T KPI Assistant")
-st.markdown("Ask a KPI-related question (e.g., 'show cm% <30% in FY26-Q1', 'Which cost triggered the Margin drop last month as compared to its previous month in Transportation', **'How much C&B varied from last quarter to this quarter'**, **'What is M-o-M trend of C&B cost % w.r.t total revenue'**)")
+st.markdown("Ask a KPI-related question (e.g., 'show cm% <30% in FY26-Q1', 'Which cost triggered the Margin drop last month as compared to its previous month in Transportation', **'How much C&B varied from last quarter to this quarter'**,**'What is M-o-M trend of C&B cost % w.r.t total revenue'**, **'What is M-o-M HC for an account'**)")
 
 # Define these global lists in mainn.py as well, so they are accessible for total calculations
 REVENUE_GROUPS = ["ONSITE", "OFFSHORE", "INDIRECT REVENUE"]
@@ -44,14 +45,27 @@ def load_data_for_streamlit():
     df['Date'] = pd.to_datetime(df['Date']).dt.tz_localize(None)
     return df
 
+@st.cache_data
+def load_ut_data_for_streamlit():
+    """Load UT data using the get_ut_data function from data_loader."""
+    with st.spinner("Loading UT data from Azure Blob..."):
+        df = get_ut_data()
+    if df.empty:
+        st.error("Failed to load UT data. Please check data source and credentials.")
+        st.stop() # Stop the app if data can't be loaded
+    # Ensure 'Date' column is datetime type for filtering and is timezone-naive
+    df['Date'] = pd.to_datetime(df['Date']).dt.tz_localize(None)
+    return df
+
 df_pl = load_data_for_streamlit()
+df_ut = load_ut_data_for_streamlit()
 
 st.write("---")
 
 # --- User Input Section ---
 user_query = st.text_input(
     "Enter your query:",
-    value="What is M-o-M trend of C&B cost % w.r.t total revenue for FY2026" # Default query for testing new functionality
+    value="What is M-o-M HC for an account" # Default query for testing new functionality
 )
 
 if st.button("Submit"):
@@ -59,14 +73,18 @@ if st.button("Submit"):
         st.warning("Please enter a query.")
     else:
         query_details = get_query_details(user_query)
+        
+        # --- CRITICAL FIX: Check if query_details is None ---
+        if query_details is None:
+            st.error("Failed to process your query. The AI model could not extract query details. Please try again or rephrase your query.")
+            st.stop() # Stop execution to prevent further errors
+        # --- END CRITICAL FIX ---
+
         query_type = query_details.get("query_type")
         
-        # Ensure df_pl's 'Date' column is consistently datetime type before any filtering
-        # This is already handled in load_data_for_streamlit via .dt.tz_localize(None)
-        # df_pl['Date'] = pd.to_datetime(df_pl['Date'], errors='coerce')
-        # df_pl.dropna(subset=['Date'], inplace=True)
-            
-        # --- Dispatch based on query_type ---
+        # --- DEBUGGING LINE ---
+        
+        # --- END DEBUGGING LINE ---
         if query_type == "CM_analysis":
             st.markdown("### Contribution Margin Analysis")
             
@@ -363,7 +381,130 @@ if st.button("Submit"):
             else:
                 st.info("No data available for the specified period to analyze C&B Cost vs. Total Revenue trend.")
 
-        else:
-            st.warning("Sorry, I can only assist with Contribution Margin, Transportation Cost, C&B Cost Variation, and C&B Revenue Trend queries at the moment.")
+        elif query_type == "HC_trend":
+            st.markdown("### Monthly Headcount (HC) Trend by Account")
+            
+            # Pass the customer_name_filter from query_details to calculate_hc_trend
+            hc_trend_df = calculate_hc_trend(df_ut, query_details)
+            specific_customer = query_details.get("customer_name_filter")
 
-#testing
+            if hc_trend_df.empty:
+                if specific_customer:
+                    st.warning(f"No Headcount data found for account '{specific_customer}' for the specified period.")
+                else:
+                    st.info("No Headcount data available for the specified period or accounts.")
+            else: 
+                # Use st.tabs without 'key' or 'default_index' for compatibility with older Streamlit versions.
+                # WARNING: This means the tab selection will reset to the first tab on every rerun.
+                # The only way to persist tab selection reliably is to upgrade Streamlit.
+                tab1_hc_trend, tab2_hc_trend = st.tabs(["📋 Data Table", "📈 Visual Analysis"])
+
+                with tab1_hc_trend:
+                    st.subheader("Monthly Headcount by Account (Full Data):")
+                    # Apply the specific customer filter to the data table as well
+                    if specific_customer:
+                        # CRITICAL FIX: Use exact match for filtering the data table
+                        filtered_data_table_df = hc_trend_df[hc_trend_df['FinalCustomerName'].str.lower() == specific_customer.lower().strip()]
+                        st.dataframe(filtered_data_table_df)
+                        if filtered_data_table_df.empty:
+                            st.info(f"No detailed data for '{specific_customer}' in this period.")
+                    else:
+                        st.dataframe(hc_trend_df)
+
+                with tab2_hc_trend:
+                    if specific_customer:
+                        # Display trend for the specific customer
+                        st.subheader(f"Monthly Headcount Trend for '{specific_customer}'")
+                        # CRITICAL FIX: Use exact match for filtering the data for plot
+                        customer_df_for_plot = hc_trend_df[hc_trend_df['FinalCustomerName'].str.lower() == specific_customer.lower().strip()].copy()
+                        
+                        if not customer_df_for_plot.empty:
+                            # Aggregate to ensure only one HC value per month for the specific customer
+                            customer_df_for_plot = customer_df_for_plot.groupby('Month')['HC'].sum().reset_index()
+
+                            # --- DEBUGGING LINE REMOVED ---
+                            # st.write(f"DEBUG: Data for '{specific_customer}' for plot:")
+                            # st.dataframe(customer_df_for_plot)
+                            # --- END DEBUGGING LINE REMOVED ---
+
+                            fig = go.Figure()
+                            fig.add_trace(
+                                go.Scatter(
+                                    x=customer_df_for_plot['Month'],
+                                    y=customer_df_for_plot['HC'],
+                                    mode='lines+markers',
+                                    name=specific_customer,
+                                    text=[specific_customer] * len(customer_df_for_plot), # For robust hover
+                                    hovertemplate="<b>Month:</b> %{x}<br><b>Customer:</b> %{text}<br><b>HC:</b> %{y}<extra></extra>"
+                                )
+                            )
+                            fig.update_layout(
+                                title_text=f"Monthly Headcount Trend for '{specific_customer}'",
+                                xaxis_title="Month",
+                                yaxis_title="Headcount (HC)",
+                                hovermode="x unified",
+                                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                                height=600
+                            )
+                            st.plotly_chart(fig, use_container_width=True)
+                        else:
+                            st.info(f"No headcount data available for '{specific_customer}' in the specified period to visualize.")
+                    else:
+                        # Display trend for Top 10 Customers and Others
+                        st.subheader("Monthly Headcount Trend for Top 10 Customers and Others")
+                        
+                        num_top_customers = 10 
+                        
+                        fig = go.Figure()
+
+                        # Calculate TOTAL HC for each customer to determine top 10
+                        total_hc_by_customer = hc_trend_df.groupby('FinalCustomerName')['HC'].sum().sort_values(ascending=False)
+                        top_customers = total_hc_by_customer.head(num_top_customers).index.tolist()
+                        other_customers = total_hc_by_customer.tail(len(total_hc_by_customer) - num_top_customers).index.tolist()
+
+                        # Plot top customers
+                        for customer in top_customers:
+                            customer_df = hc_trend_df[hc_trend_df['FinalCustomerName'] == customer]
+                            # Ensure monthly aggregation for plotting
+                            customer_df_for_plot = customer_df.groupby('Month')['HC'].sum().reset_index()
+
+                            fig.add_trace(
+                                go.Scatter(
+                                    x=customer_df_for_plot['Month'],
+                                    y=customer_df_for_plot['HC'],
+                                    mode='lines+markers',
+                                    name=customer, # Customer name as legend
+                                    # This is the robust fix: create a 'text' array for each point
+                                    text=[customer] * len(customer_df_for_plot), 
+                                    hovertemplate="<b>Month:</b> %{x}<br><b>Customer:</b> %{text}<br><b>HC:</b> %{y}<extra></extra>"
+                                )
+                            )
+                        
+                        # Plot 'Others' if there are remaining customers
+                        if other_customers:
+                            others_df = hc_trend_df[hc_trend_df['FinalCustomerName'].isin(other_customers)]
+                            others_monthly_hc = others_df.groupby('Month')['HC'].sum().reset_index()
+                            fig.add_trace(
+                                go.Scatter(
+                                    x=others_monthly_hc['Month'],
+                                    y=others_monthly_hc['HC'],
+                                    mode='lines+markers',
+                                    name='Others',
+                                    line=dict(dash='dot', color='gray'), # Dotted gray line for 'Others'
+                                    hovertemplate="<b>Month:</b> %{x}<br><b>Group:</b> Others<br><b>Total HC:</b> %{y}<extra></extra>"
+                                )
+                            )
+                        
+                        fig.update_layout(
+                            title_text=f"Monthly Headcount Trend for Top {num_top_customers} Customers and Others",
+                            xaxis_title="Month",
+                            yaxis_title="Headcount (HC)",
+                            hovermode="x unified",
+                            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                            height=600
+                        )
+                        
+                        st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.warning("Sorry, I can only assist with Contribution Margin, Transportation Cost, C&B Cost Variation, C&B Revenue Trend, and Headcount Trend queries at the moment.")
+

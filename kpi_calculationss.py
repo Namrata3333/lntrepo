@@ -130,9 +130,6 @@ Rules for Date Interpretation:
         content = response.choices[0].message.content
         result = json.loads(content)
         
-        # --- DEBUG: Print raw LLM date parsing result ---
-        # print(f"DEBUG (Date Parsing - LLM Raw): {result}")
-        # --- END DEBUG ---
 
         # Convert date strings to datetime objects (NOT date objects)
         for key in ["start_date", "end_date", "secondary_start_date", "secondary_end_date"]:
@@ -157,23 +154,13 @@ Rules for Date Interpretation:
             result["secondary_start_date"] = None
             result["secondary_end_date"] = None
             result["date_filter"] = True
-            # --- DEBUG: Print final calculated dates for explicit periods ---
-            # print(f"DEBUG (Date Parsing - Explicit Period): start_date={result['start_date']}, end_date={result['end_date']}, relative_period_detected={relative_period}")
-            # --- END DEBUG ---
+          
             return result
         elif relative_period == "explicit_comparison":
             result["date_filter"] = True
-            # --- DEBUG: Print final calculated dates for explicit comparison ---
-            # print(f"DEBUG (Date Parsing - Explicit Comparison): primary_start={result['start_date']}, primary_end={result['end_date']}, secondary_start={result['secondary_start_date']}, secondary_end={result['secondary_end_date']}, relative_period_detected={relative_period}")
-            # --- END DEBUG ---
+          
             return result
 
-        # --- Custom L&T Fiscal Year Logic for Relative Periods (only if LLM didn't handle explicitly) ---
-        # This block will now only execute if `relative_period_detected` is one of the relative terms
-        # and it's not an "explicit_quarter" or "explicit_fiscal_year" case.
-        
-        # This is the "last quarter" specific calculation block. It needs to be entered when
-        # relative_period is explicitly "last quarter" and NOT "last_to_this_quarter"
         if relative_period == 'last quarter': 
             current_cal_month = today.month
             current_cal_year = today.year
@@ -212,9 +199,7 @@ Rules for Date Interpretation:
             result["description"] = f"last quarter ({last_completed_q_name})"
             result["secondary_start_date"] = None 
             result["secondary_end_date"] = None
-            # --- DEBUG: Print final calculated dates for 'last quarter' ---
-            # print(f"DEBUG (Date Parsing - Last Quarter): today={today}, start_date={result['start_date']}, end_date={result['end_date']}, relative_period_detected={relative_period}")
-            # --- END DEBUG ---
+           
         
         elif relative_period == 'last_to_this_quarter':
             current_cal_year = today.year
@@ -267,9 +252,7 @@ Rules for Date Interpretation:
             result["secondary_end_date"] = datetime(prev_q_cal_year_calc, prev_q_end_month, calendar.monthrange(prev_q_cal_year_calc, prev_q_end_month)[1], 23, 59, 59, 999999)
             result["date_filter"] = True
             result["description"] = f"this quarter ({curr_q_name}) vs last quarter ({prev_q_name})"
-            # --- DEBUG: Print final calculated dates for 'last_to_this_quarter' ---
-            # print(f"DEBUG (Date Parsing - Last to This Quarter): primary_start={result['start_date']}, primary_end={result['end_date']}, secondary_start={result['secondary_start_date']}, secondary_end={result['secondary_end_date']}, relative_period_detected={relative_period}")
-            # --- END DEBUG ---
+           
         
         # Add other relative period handlers here (e.g., 'last year', 'this year', 'last month', etc.)
         # Ensure they follow the 'if/elif' structure correctly.
@@ -306,6 +289,7 @@ def get_query_details(prompt):
                       'Transportation_cost_analysis' for queries about cost trends in Transportation (e.g., 'Which cost triggered the Margin drop last month in Transportation'),
                       'C&B_cost_variation' for queries asking about C&B cost variation between two periods (e.g., 'How much C&B varied from last quarter to this quarter'),
                       'CB_revenue_trend' for queries asking about "M-o-M trend of C&B cost % w.r.t total revenue",
+                      'HC_trend' for queries asking about "M-o-M HC for an account", "monthly headcount trend", or specifically for a customer like "M-o-M HC for A1".
                       'unsupported' for anything else.
     - 'cm_filter_details': { 'filter_type': 'less_than', 'lower': 0.3, 'upper': null } if 'CM_analysis', else null.
         **IMPORTANT for 'cm_filter_details' values:** 'lower' and 'upper' should ALWAYS be expressed as DECIMAL floats.
@@ -317,6 +301,14 @@ def get_query_details(prompt):
         **IMPORTANT for 'filter_type' values (for CM_analysis):** Use 'less_than', 'greater_than', 'between', or 'equals'.
 
     - 'segment': 'Transportation' if the query explicitly mentions it for transportation cost analysis, otherwise null.
+    - 'final_customer_name': This is CRITICAL for 'HC_trend' queries. Extract the EXACT 'FinalCustomerName' string if the query explicitly asks for HC trend for a specific account. If no specific customer name is mentioned, return `null`.
+        **Examples for 'final_customer_name' extraction:**
+        - User Query: "M-o-M HC for A1" -> "A1"
+        - User Query: "Show monthly headcount for Customer X" -> "Customer X"
+        - User Query: "headcount trend for L&T Infotech" -> "L&T Infotech"
+        - User Query: "What is M-o-M HC for an account" -> null (no specific customer)
+        - User Query: "monthly headcount trend" -> null (no specific customer)
+        **DO NOT include surrounding words like "for", "account", "customer", "company" in the extracted name.**
 
     Return ONLY valid JSON.
     """
@@ -336,10 +328,29 @@ def get_query_details(prompt):
         query_type = query_type_result.get('query_type', 'unsupported')
         cm_filter_details = query_type_result.get('cm_filter_details')
         segment_filter = query_type_result.get('segment')
+        # Ensure customer_name_filter is extracted and stripped of whitespace
+        customer_name_filter = query_type_result.get('final_customer_name')
+        if customer_name_filter:
+            customer_name_filter = customer_name_filter.strip()
+            # Further clean if it contains common prefixes/suffixes from LLM error
+            # This is a defensive measure if LLM still includes extra words
+            common_prefixes = ["for ", "account ", "customer ", "company "]
+            for prefix in common_prefixes:
+                if customer_name_filter.lower().startswith(prefix):
+                    customer_name_filter = customer_name_filter[len(prefix):].strip()
+            common_suffixes = [" account", " customer", " company"]
+            for suffix in common_suffixes:
+                if customer_name_filter.lower().endswith(suffix):
+                    customer_name_filter = customer_name_filter[:-len(suffix)].strip()
+            
+            # If after stripping and cleaning, it's empty, set to None
+            if not customer_name_filter:
+                customer_name_filter = None
 
         final_result = {
             "query_type": query_type,
             "segment_filter": segment_filter,
+            "customer_name_filter": customer_name_filter, # Add customer name filter
             **date_info # Include all date info (primary and secondary)
         }
 
@@ -360,12 +371,12 @@ def get_query_details(prompt):
         return {
             "query_type": "unsupported",
             "segment_filter": None,
+            "customer_name_filter": None, # Ensure this is also null on error
             "cm_filter_type": None,
             "cm_lower_bound": None,
             "cm_upper_bound": None,
             **date_info # Still include date info even if other parsing fails
         }
-
 # ---------- CM CALCULATION FUNCTION ----------
 def calculate_cm(df_pl, query_details):
     df_copy = df_pl.copy()
@@ -734,3 +745,65 @@ def calculate_cb_revenue_trend(df_pl, query_details):
 
     return monthly_data[['Month', 'CB_Cost', 'Total_Revenue', 'CB_Revenue_Difference', 'CB_Cost_vs_Revenue_Ratio_Percent']]
 #testing
+def calculate_hc_trend(df_ut, query_details):
+    """
+    Calculates the monthly trend of Headcount (HC) by Final Customer Name.
+    HC is defined as the distinct count of "PSNo".
+    Handles explicit date ranges or defaults to the last 12 months.
+    Can filter for a specific customer if 'customer_name_filter' is provided in query_details.
+    Returns a DataFrame with 'Month', 'FinalCustomerName', and 'HC'.
+    """
+    df_copy = df_ut.copy()
+
+    # Ensure the 'Date' column in df_copy is datetime type before filtering
+    df_copy['Date'] = pd.to_datetime(df_copy['Date'], errors='coerce')
+    df_copy.dropna(subset=['Date'], inplace=True) # Drop rows where Date conversion failed
+
+    # Determine the date range
+    start_date = query_details.get("start_date")
+    end_date = query_details.get("end_date")
+
+    if not start_date or not end_date:
+        # Default to last 12 months if no explicit date filter
+        today = datetime.now(pytz.timezone("Asia/Kolkata"))
+        # Set end_date to the last day of the current month
+        end_date = datetime(today.year, today.month, calendar.monthrange(today.year, today.month)[1], 23, 59, 59, 999999)
+        # Set start_date to the first day of the month 11 months ago from the current month
+        start_date = (today - pd.DateOffset(months=11)).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    
+    # Convert start_date and end_date to pandas Timestamps for robust comparison and ensure they are naive
+    start_date_ts = pd.Timestamp(start_date).tz_localize(None)
+    end_date_ts = pd.Timestamp(end_date).tz_localize(None)
+
+    # Use .between() method for robust date filtering
+    df_filtered = df_copy[
+        df_copy['Date'].between(start_date_ts, end_date_ts, inclusive='both')
+    ].copy()
+
+    # Apply customer name filter if provided
+    customer_name_filter = query_details.get("customer_name_filter")
+    if customer_name_filter:
+        # CRITICAL FIX: Use exact match for FinalCustomerName, case-insensitive
+        df_filtered = df_filtered[df_filtered["FinalCustomerName"].str.lower() == customer_name_filter.lower().strip()]
+        
+    if df_filtered.empty:
+        return pd.DataFrame(columns=['Month', 'FinalCustomerName', 'HC'])
+
+    # Extract month and year for grouping
+    df_filtered['Month_Year'] = df_filtered['Date'].dt.to_period('M')
+
+    # Calculate HC (distinct count of "PSNo") per month and FinalCustomerName
+    # Ensure that if a PSNo appears multiple times for the same customer in the same month,
+    # it's only counted once. This is what nunique does.
+    hc_data = df_filtered.groupby(['Month_Year', 'FinalCustomerName']).agg(
+        HC=('PSNo', 'nunique')
+    ).reset_index()
+
+    # Convert Month_Year Period to datetime for sorting and display
+    hc_data['Month'] = hc_data['Month_Year'].dt.to_timestamp()
+    hc_data = hc_data.sort_values(by=['Month', 'FinalCustomerName']).reset_index(drop=True)
+
+    # Format Month for display
+    hc_data['Month'] = hc_data['Month'].dt.strftime('%Y-%m')
+
+    return hc_data[['Month', 'FinalCustomerName', 'HC']]
