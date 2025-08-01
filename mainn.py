@@ -104,43 +104,7 @@ user_query = st.text_input(
     key="text_input_query"
 )
 
-# --- Add the new clickable button functionality ---
-st.markdown("#### Try a sample query:")
-sample_queries = [
-    "List accounts which have C.M. <30% in FY26-Q1",
-    "Which cost triggered the Margin drop last month in Transportation",
-    "How much C&B varied from last quarter to this quarter",
-    "What is M-o-M trend of C&B cost % w.r.t Total Revenue",
-    "What is M-o-M HC for an account",
-    "What is YoY revenue for DU",
-    "What is the UT trend for last 2 quarters for a DU",
-    "DU wise Fresher UT Trends",
-    "Which are the accounts where the realized rate dropped more than 3/5th in this quarter",
-    "What is MoM trend of Revenue per person"
 
-]
-# cols = st.columns(len(sample_queries))
-# for i, query in enumerate(sample_queries):
-#     with cols[i]:
-#         if st.button(query):
-#             st.session_state.user_query = query  # Update the session state with the button's value
-
-col1, col2 = st.columns(2)
-
-# --- First Column: Display the first 5 questions ---
-# Use the `with` statement to place all content into the first column.
-with col1:
-    # Iterate through the first half of the queries (index 0 to 4)
-    for query in sample_queries[0:5]:
-        # Create a button for each query.
-        st.button(query, on_click=set_query, args=(query,), key=f"button_{query}")
-
-# --- Second Column: Display the remaining 5 questions ---
-# Use the `with` statement to place all content into the second column.
-with col2:
-    # Iterate through the second half of the queries (index 5 to 9)
-    for query in sample_queries[5:10]:
-        st.button(query, on_click=set_query, args=(query,), key=f"button_{query}")
 
 
 
@@ -1438,3 +1402,41 @@ if user_query:
         else:
             st.warning(
                 "Sorry, I can only assist with Contribution Margin, Transportation Cost, C&B Cost Variation, C&B Revenue Trend, Headcount Trend, Revenue Trend Analysis, Fresher UT Trend, Revenue Per Person Trend, and Realized Rate Drop queries at the moment.")
+
+# --- Add the new clickable button functionality ---
+st.markdown("#### Try a sample query:")
+sample_queries = [
+    "List accounts which have C.M. <30% in FY26-Q1",
+    "Which cost triggered the Margin drop last month in Transportation",
+    "How much C&B varied from last quarter to this quarter",
+    "What is M-o-M trend of C&B cost % w.r.t Total Revenue",
+    "What is M-o-M HC for an account",
+    "What is YoY revenue for DU",
+    "What is the UT trend for last 2 quarters for a DU",
+    "DU wise Fresher UT Trends",
+    "Which are the accounts where the realized rate dropped more than 3/5th in this quarter",
+    "What is MoM trend of Revenue per person"
+
+]
+# cols = st.columns(len(sample_queries))
+# for i, query in enumerate(sample_queries):
+#     with cols[i]:
+#         if st.button(query):
+#             st.session_state.user_query = query  # Update the session state with the button's value
+
+col1, col2 = st.columns(2)
+
+# --- First Column: Display the first 5 questions ---
+# Use the `with` statement to place all content into the first column.
+with col1:
+    # Iterate through the first half of the queries (index 0 to 4)
+    for query in sample_queries[0:5]:
+        # Create a button for each query.
+        st.button(query, on_click=set_query, args=(query,), key=f"button_{query}")
+
+# --- Second Column: Display the remaining 5 questions ---
+# Use the `with` statement to place all content into the second column.
+with col2:
+    # Iterate through the second half of the queries (index 5 to 9)
+    for query in sample_queries[5:10]:
+        st.button(query, on_click=set_query, args=(query,), key=f"button_{query}")
