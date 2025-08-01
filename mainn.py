@@ -161,13 +161,13 @@ if user_query:
             col = query_details["comparison_column"]
             filters_applied.append(f"Filter: {col} {op} {val}")
 
-        if filters_applied:
-            filters_str = " | ".join(filters_applied)
-            st.markdown(f"""
-                 <div style="background-color: #d4edda; color: #155724; padding: 10px; border-radius: 5px; margin-bottom: 20px;">
-                     <b>Filters Applied:</b> {filters_str}
-                 </div>
-             """, unsafe_allow_html=True)
+        # if filters_applied:
+        #     filters_str = " | ".join(filters_applied)
+        #     st.markdown(f"""
+        #          <div style="background-color: #d4edda; color: #155724; padding: 10px; border-radius: 5px; margin-bottom: 20px;">
+        #              <b>Filters Applied:</b> {filters_str}
+        #          </div>
+        #      """, unsafe_allow_html=True)
         # --- END NEW FEATURE ---
 
         # --- DEBUGGING LINE (Keep for your debugging, remove for production) ---
